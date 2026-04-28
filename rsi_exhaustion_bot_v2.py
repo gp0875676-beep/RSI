@@ -39,7 +39,7 @@ import telegram
 #  YOUR CONFIG  — only 2 things to fill in (Telegram only)
 # ══════════════════════════════════════════════════════════════════
 
-TELEGRAM_BOT_TOKEN = ""    # from @BotFather
+TELEGRAM_BOT_TOKEN = ""    # from @BotFathe
 TELEGRAM_CHAT_ID   = "8798763306"      # your group/channel/personal ID
 
 # ── Trading pair ───────────────────────────────────────────────────
