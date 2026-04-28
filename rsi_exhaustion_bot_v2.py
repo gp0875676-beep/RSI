@@ -39,8 +39,8 @@ import telegram
 #  YOUR CONFIG  — only 2 things to fill in (Telegram only)
 # ══════════════════════════════════════════════════════════════════
 
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"    # from @BotFather
-TELEGRAM_CHAT_ID   = "YOUR_CHAT_ID"      # your group/channel/personal ID
+TELEGRAM_BOT_TOKEN = "8613005145:AAHFWQwgi-94BYzmLJ0_j7hvT-YgDIPa730"    # from @BotFather
+TELEGRAM_CHAT_ID   = "8798763306"      # your group/channel/personal ID
 
 # ── Trading pair ───────────────────────────────────────────────────
 SYMBOL      = "BTCUSDT"    # Binance format (no slash)
