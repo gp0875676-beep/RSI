@@ -39,8 +39,9 @@ import telegram
 #  YOUR CONFIG  — only 2 things to fill in (Telegram only)
 # ══════════════════════════════════════════════════════════════════
 
-TELEGRAM_BOT_TOKEN = ""    # from @BotFathe
-TELEGRAM_CHAT_ID   = "8798763306"      # your group/channel/personal ID
+import os
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "8798763306")
 
 # ── Trading pair ───────────────────────────────────────────────────
 SYMBOL      = "BTCUSDT"    # Binance format (no slash)
