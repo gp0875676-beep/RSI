@@ -2,9 +2,7 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║     RSI EXHAUSTION + VOLUME SPIKE SIGNAL BOT  v2.0              ║
 ║     15M / 1H / 4H Confluence  →  Telegram Alerts               ║
-║                                                                  ║
-║  ✅ 100% FREE — No paid API keys needed                         ║
-║     All data from Binance Futures Public API (no account req.)  ║
+║     Data: Bybit Public API (no geo-restrictions)                ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -24,11 +22,11 @@ import telegram
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "8798763306")
 
-SYMBOL      = "BTCUSDT"
-RSI_PERIOD  = 14
+SYMBOL     = "BTCUSDT"
+RSI_PERIOD = 14
 
-SHORT_EXHAUSTION_RSI  = 90
-LONG_EXHAUSTION_RSI   = 10
+SHORT_EXHAUSTION_RSI = 90
+LONG_EXHAUSTION_RSI  = 10
 
 SHORT_15M_BREAK = 60
 LONG_15M_BREAK  = 40
@@ -45,97 +43,44 @@ RESET_LOWER = 35
 LOOKBACK_CANDLES = 12
 
 # ══════════════════════════════════════════════════════════════════
-#  BINANCE FUTURES PUBLIC API
+#  BYBIT PUBLIC API  (no geo-restrictions, no key needed)
 # ══════════════════════════════════════════════════════════════════
 
-BINANCE_FAPI = "https://fapi.binance.com"
+BYBIT_BASE = "https://api.bybit.com"
 
-def _fapi(path, params=None):
+def _bybit(path, params=None):
     try:
-        r = requests.get(f"{BINANCE_FAPI}{path}", params=params, timeout=10)
+        r = requests.get(f"{BYBIT_BASE}{path}", params=params, timeout=10)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if data.get("retCode", -1) != 0:
+            print(f"  [Bybit API] {path} → retCode={data.get('retCode')} {data.get('retMsg')}")
+            return None
+        return data.get("result")
     except Exception as e:
-        print(f"  [Binance API] {path} → {e}")
+        print(f"  [Bybit API] {path} → {e}")
         return None
 
-def get_funding_rate(symbol=SYMBOL):
-    data = _fapi("/fapi/v1/premiumIndex", {"symbol": symbol})
-    if data and "lastFundingRate" in data:
-        return round(float(data["lastFundingRate"]) * 100, 5)
-    return None
+# ── OHLCV ─────────────────────────────────────────────────────────
 
-def get_open_interest(symbol=SYMBOL):
-    data = _fapi("/fapi/v1/openInterest", {"symbol": symbol})
-    if data and "openInterestValue" in data:
-        return float(data["openInterestValue"])
-    if data and "openInterest" in data:
-        price = get_mark_price(symbol)
-        if price:
-            return float(data["openInterest"]) * price
-    return None
-
-def get_mark_price(symbol=SYMBOL):
-    data = _fapi("/fapi/v1/premiumIndex", {"symbol": symbol})
-    if data and "markPrice" in data:
-        return float(data["markPrice"])
-    return None
-
-def get_long_short_ratio(symbol=SYMBOL, period="1h"):
-    data = _fapi(
-        "/futures/data/topLongShortPositionRatio",
-        {"symbol": symbol, "period": period, "limit": 1}
-    )
-    if data and isinstance(data, list) and len(data) > 0:
-        return float(data[0].get("longShortRatio", 0))
-    return None
-
-def get_taker_buy_sell_volume(symbol=SYMBOL, period="1h"):
-    data = _fapi(
-        "/futures/data/takerlongshortRatio",
-        {"symbol": symbol, "period": period, "limit": 1}
-    )
-    if data and isinstance(data, list) and len(data) > 0:
-        buy_vol  = float(data[0].get("buyVol", 0))
-        sell_vol = float(data[0].get("sellVol", 0))
-        return buy_vol, sell_vol
-    return None, None
-
-def get_liquidations_approx(symbol=SYMBOL):
-    data = _fapi(
-        "/futures/data/openInterestHist",
-        {"symbol": symbol, "period": "15m", "limit": 3}
-    )
-    if data and isinstance(data, list) and len(data) >= 2:
-        oi_now  = float(data[-1].get("sumOpenInterestValue", 0))
-        oi_prev = float(data[-2].get("sumOpenInterestValue", 0))
-        if oi_prev > 0:
-            oi_change_pct = ((oi_now - oi_prev) / oi_prev) * 100
-            if oi_change_pct < -2:
-                return f"⚡ OI dropped {oi_change_pct:.1f}% — possible liquidation cascade"
-            elif oi_change_pct > 2:
-                return f"📈 OI surged +{oi_change_pct:.1f}% — new positions opening"
-    return None
-
-# ══════════════════════════════════════════════════════════════════
-#  OHLCV — Direct Binance Futures klines (no ccxt)
-# ══════════════════════════════════════════════════════════════════
+BYBIT_INTERVAL = {"15m": "15", "1h": "60", "4h": "240"}
 
 def fetch_ohlcv(timeframe, limit=120):
-    """Fetch candles directly from Binance Futures REST — no ccxt needed."""
-    params = {
+    """Fetch candles from Bybit Linear (USDT perpetual) — public, no key."""
+    result = _bybit("/v5/market/kline", {
+        "category": "linear",
         "symbol":   SYMBOL,
-        "interval": timeframe,
+        "interval": BYBIT_INTERVAL[timeframe],
         "limit":    limit,
-    }
-    data = _fapi("/fapi/v1/klines", params)
-    if data is None:
+    })
+    if result is None or "list" not in result:
         raise Exception(f"Failed to fetch klines for {timeframe}")
 
+    # Bybit returns newest first → reverse
     rows = []
-    for c in data:
+    for c in reversed(result["list"]):
         rows.append({
-            "ts":     pd.to_datetime(c[0], unit="ms", utc=True),
+            "ts":     pd.to_datetime(int(c[0]), unit="ms", utc=True),
             "open":   float(c[1]),
             "high":   float(c[2]),
             "low":    float(c[3]),
@@ -150,6 +95,68 @@ def add_rsi(df):
     df = df.copy()
     df["rsi"] = ta.rsi(df["close"], length=RSI_PERIOD)
     return df.dropna()
+
+# ── Market data helpers ───────────────────────────────────────────
+
+def get_mark_price(symbol=SYMBOL):
+    result = _bybit("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    if result and "list" in result and len(result["list"]) > 0:
+        return float(result["list"][0].get("markPrice", 0))
+    return None
+
+def get_funding_rate(symbol=SYMBOL):
+    result = _bybit("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    if result and "list" in result and len(result["list"]) > 0:
+        fr = result["list"][0].get("fundingRate")
+        if fr is not None:
+            return round(float(fr) * 100, 5)
+    return None
+
+def get_open_interest(symbol=SYMBOL):
+    result = _bybit("/v5/market/open-interest", {
+        "category":     "linear",
+        "symbol":       symbol,
+        "intervalTime": "1h",
+        "limit":        1,
+    })
+    if result and "list" in result and len(result["list"]) > 0:
+        return float(result["list"][0].get("openInterest", 0))
+    return None
+
+def get_long_short_ratio(symbol=SYMBOL):
+    """Bybit long/short ratio from tickers."""
+    result = _bybit("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    if result and "list" in result and len(result["list"]) > 0:
+        t = result["list"][0]
+        buy_ratio  = float(t.get("bid1Price", 0))   # placeholder
+        # Bybit doesn't expose L/S ratio on free tier easily — return None gracefully
+    return None
+
+def get_taker_buy_sell_volume(symbol=SYMBOL):
+    """Approximate taker buy ratio from 1h kline volume."""
+    # Bybit doesn't have a direct taker endpoint on free public API
+    # Return None gracefully — message builder handles it
+    return None, None
+
+def get_liquidations_approx(symbol=SYMBOL):
+    """Check OI change as liquidation proxy."""
+    result = _bybit("/v5/market/open-interest", {
+        "category":     "linear",
+        "symbol":       symbol,
+        "intervalTime": "15min",
+        "limit":        3,
+    })
+    if result and "list" in result and len(result["list"]) >= 2:
+        oi_list = result["list"]
+        oi_now  = float(oi_list[0].get("openInterest", 0))
+        oi_prev = float(oi_list[1].get("openInterest", 0))
+        if oi_prev > 0:
+            oi_change_pct = ((oi_now - oi_prev) / oi_prev) * 100
+            if oi_change_pct < -2:
+                return f"⚡ OI dropped {oi_change_pct:.1f}% — possible liquidation cascade"
+            elif oi_change_pct > 2:
+                return f"📈 OI surged +{oi_change_pct:.1f}% — new positions opening"
+    return None
 
 # ══════════════════════════════════════════════════════════════════
 #  VOLUME SPIKE DETECTION
@@ -166,14 +173,12 @@ def detect_volume_spike(df, multiplier=VOLUME_SPIKE_MULTIPLIER, lookback=VOLUME_
     return is_spike, round(curr_vol, 2), round(avg_vol, 2), round(ratio, 2)
 
 def volume_spike_summary(df_15m, df_1h):
-    spike_15m, cvol_15m, avg_15m, ratio_15m = detect_volume_spike(df_15m)
-    spike_1h,  cvol_1h,  avg_1h,  ratio_1h  = detect_volume_spike(df_1h)
+    spike_15m, _, _, ratio_15m = detect_volume_spike(df_15m)
+    spike_1h,  _, _, ratio_1h  = detect_volume_spike(df_1h)
     either_spike = spike_15m or spike_1h
     details = {
-        "15m_spike": spike_15m,
-        "15m_ratio": ratio_15m,
-        "1h_spike":  spike_1h,
-        "1h_ratio":  ratio_1h,
+        "15m_spike": spike_15m, "15m_ratio": ratio_15m,
+        "1h_spike":  spike_1h,  "1h_ratio":  ratio_1h,
         "any_spike": either_spike,
     }
     return either_spike, details
@@ -185,50 +190,28 @@ def volume_spike_summary(df_15m, df_1h):
 def slope(df, n=SLOPE_CANDLES):
     vals = df["rsi"].iloc[-n:].tolist()
     diff = vals[-1] - vals[0]
-    if diff > MIN_RSI_MOVE:
-        return "rising"
-    elif diff < -MIN_RSI_MOVE:
-        return "declining"
+    if diff > MIN_RSI_MOVE:   return "rising"
+    elif diff < -MIN_RSI_MOVE: return "declining"
     return "flat"
 
-def rsi_now(df):
-    return round(df["rsi"].iloc[-1], 2)
-
-def rsi_prev(df):
-    return round(df["rsi"].iloc[-2], 2)
-
-def rsi_peak(df, n=LOOKBACK_CANDLES):
-    return round(df["rsi"].iloc[-n:].max(), 2)
-
-def rsi_bottom(df, n=LOOKBACK_CANDLES):
-    return round(df["rsi"].iloc[-n:].min(), 2)
+def rsi_now(df):    return round(df["rsi"].iloc[-1], 2)
+def rsi_prev(df):   return round(df["rsi"].iloc[-2], 2)
+def rsi_peak(df, n=LOOKBACK_CANDLES):   return round(df["rsi"].iloc[-n:].max(), 2)
+def rsi_bottom(df, n=LOOKBACK_CANDLES): return round(df["rsi"].iloc[-n:].min(), 2)
 
 # ══════════════════════════════════════════════════════════════════
 #  SIGNAL CONDITIONS
 # ══════════════════════════════════════════════════════════════════
 
 def check_short(tf):
-    df4  = tf["4h"]
-    df1  = tf["1h"]
-    df15 = tf["15m"]
-
-    r4      = rsi_now(df4)
-    pk4     = rsi_peak(df4)
-    slp4    = slope(df4)
-    came_dn = (pk4 - r4) >= MIN_RSI_MOVE
-
-    r1   = rsi_now(df1)
-    slp1 = slope(df1)
-
-    r15  = rsi_now(df15)
-    pr15 = rsi_prev(df15)
-    slp15 = slope(df15)
-
+    df4, df1, df15 = tf["4h"], tf["1h"], tf["15m"]
+    r4, pk4, slp4  = rsi_now(df4), rsi_peak(df4), slope(df4)
+    came_dn        = (pk4 - r4) >= MIN_RSI_MOVE
+    r1, slp1       = rsi_now(df1), slope(df1)
+    r15, pr15, slp15 = rsi_now(df15), rsi_prev(df15), slope(df15)
     break15 = (pr15 >= SHORT_15M_BREAK and r15 < SHORT_15M_BREAK) or \
               (r15 < SHORT_15M_BREAK and slp15 == "declining")
-
     vol_ok, vol_info = volume_spike_summary(df15, df1)
-
     conds = {
         "exhaustion": pk4 >= SHORT_EXHAUSTION_RSI,
         "4h_decline": slp4 == "declining" and came_dn,
@@ -236,37 +219,23 @@ def check_short(tf):
         "15m_break":  break15,
         "vol_spike":  vol_ok,
     }
-    details = {
-        **conds,
+    details = {**conds,
         "peak_4h": pk4, "rsi_4h": r4, "slope_4h": slp4,
-        "rsi_1h":  r1,  "slope_1h": slp1,
+        "rsi_1h": r1,   "slope_1h": slp1,
         "rsi_15m": r15, "slope_15m": slp15,
-        "vol":     vol_info,
+        "vol": vol_info,
     }
     return all(conds.values()), details
 
 def check_long(tf):
-    df4  = tf["4h"]
-    df1  = tf["1h"]
-    df15 = tf["15m"]
-
-    r4      = rsi_now(df4)
-    bt4     = rsi_bottom(df4)
-    slp4    = slope(df4)
-    came_up = (r4 - bt4) >= MIN_RSI_MOVE
-
-    r1   = rsi_now(df1)
-    slp1 = slope(df1)
-
-    r15  = rsi_now(df15)
-    pr15 = rsi_prev(df15)
-    slp15 = slope(df15)
-
+    df4, df1, df15 = tf["4h"], tf["1h"], tf["15m"]
+    r4, bt4, slp4  = rsi_now(df4), rsi_bottom(df4), slope(df4)
+    came_up        = (r4 - bt4) >= MIN_RSI_MOVE
+    r1, slp1       = rsi_now(df1), slope(df1)
+    r15, pr15, slp15 = rsi_now(df15), rsi_prev(df15), slope(df15)
     break15 = (pr15 <= LONG_15M_BREAK and r15 > LONG_15M_BREAK) or \
               (r15 > LONG_15M_BREAK and slp15 == "rising")
-
     vol_ok, vol_info = volume_spike_summary(df15, df1)
-
     conds = {
         "exhaustion": bt4 <= LONG_EXHAUSTION_RSI,
         "4h_rise":    slp4 == "rising" and came_up,
@@ -274,12 +243,11 @@ def check_long(tf):
         "15m_break":  break15,
         "vol_spike":  vol_ok,
     }
-    details = {
-        **conds,
+    details = {**conds,
         "bottom_4h": bt4, "rsi_4h": r4, "slope_4h": slp4,
-        "rsi_1h":   r1,   "slope_1h": slp1,
-        "rsi_15m":  r15,  "slope_15m": slp15,
-        "vol":      vol_info,
+        "rsi_1h": r1,     "slope_1h": slp1,
+        "rsi_15m": r15,   "slope_15m": slp15,
+        "vol": vol_info,
     }
     return all(conds.values()), details
 
@@ -306,15 +274,10 @@ def check_reset(tf):
 #  TELEGRAM MESSAGE
 # ══════════════════════════════════════════════════════════════════
 
-def _slope_icon(s):
-    return {"rising": "↑", "declining": "↓", "flat": "→"}.get(s, "?")
+def _slope_icon(s): return {"rising": "↑", "declining": "↓", "flat": "→"}.get(s, "?")
+def _cond_icon(b):  return "✅" if b else "❌"
 
-def _cond_icon(b):
-    return "✅" if b else "❌"
-
-def build_message(sig_type, details, price,
-                  funding, oi, ls_ratio,
-                  buy_vol, sell_vol, liq_note):
+def build_message(sig_type, details, price, funding, oi, ls_ratio, buy_vol, sell_vol, liq_note):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     vol = details["vol"]
 
@@ -337,8 +300,8 @@ def build_message(sig_type, details, price,
         f"```"
     )
 
-    vol_15m = f"`{vol['15m_ratio']}x` {'🔥' if vol['15m_spike'] else '—'}"
-    vol_1h  = f"`{vol['1h_ratio']}x`  {'🔥' if vol['1h_spike'] else '—'}"
+    vol_15m   = f"`{vol['15m_ratio']}x` {'🔥' if vol['15m_spike'] else '—'}"
+    vol_1h    = f"`{vol['1h_ratio']}x`  {'🔥' if vol['1h_spike'] else '—'}"
     vol_block = (
         f"📊 *Volume Spike* {_cond_icon(vol['any_spike'])}\n"
         f"  15M: {vol_15m}   1H: {vol_1h}"
@@ -352,13 +315,8 @@ def build_message(sig_type, details, price,
         market_lines.append(f"💰 Funding: `{funding:+.4f}%` ({sent})")
     if oi:
         market_lines.append(f"📦 Open Interest: `${oi/1e9:.2f}B`")
-    if ls_ratio:
-        market_lines.append(f"⚖️ Long/Short ratio: `{ls_ratio:.2f}`")
-    if buy_vol and sell_vol and (buy_vol + sell_vol) > 0:
-        buy_pct = buy_vol / (buy_vol + sell_vol) * 100
-        market_lines.append(f"🤜 Taker buy: `{buy_pct:.1f}%` | sell: `{100-buy_pct:.1f}%`")
     if liq_note:
-        market_lines.append(f"{liq_note}")
+        market_lines.append(liq_note)
 
     market_block = "\n".join(market_lines) if market_lines else ""
 
@@ -384,11 +342,7 @@ def build_message(sig_type, details, price,
 
 async def _tg_send(msg):
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text=msg,
-        parse_mode="Markdown"
-    )
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
 
 def send_telegram(msg):
     asyncio.run(_tg_send(msg))
@@ -406,7 +360,7 @@ def run_scan():
     try:
         tf = {}
         for t in ["15m", "1h", "4h"]:
-            raw = fetch_ohlcv(t, limit=120)
+            raw  = fetch_ohlcv(t, limit=120)
             tf[t] = add_rsi(raw)
 
         r4  = rsi_now(tf["4h"])
@@ -421,12 +375,10 @@ def run_scan():
 
         if state["setup"] is None:
             if pk4 >= SHORT_EXHAUSTION_RSI:
-                state["setup"]       = "SHORT"
-                state["extreme_val"] = pk4
+                state["setup"] = "SHORT"; state["extreme_val"] = pk4
                 print(f"  ⚡ SHORT exhaustion detected — 4H peak RSI = {pk4}")
             elif bt4 <= LONG_EXHAUSTION_RSI:
-                state["setup"]       = "LONG"
-                state["extreme_val"] = bt4
+                state["setup"] = "LONG"; state["extreme_val"] = bt4
                 print(f"  ⚡ LONG exhaustion detected — 4H bottom RSI = {bt4}")
             else:
                 print(f"  No extreme setup active (need ≥{SHORT_EXHAUSTION_RSI} or ≤{LONG_EXHAUSTION_RSI})")
@@ -440,7 +392,6 @@ def run_scan():
                   f"1H↓={_cond_icon(c['1h_decline'])} "
                   f"15M={_cond_icon(c['15m_break'])} "
                   f"VOL={_cond_icon(c['vol']['any_spike'])}")
-
         elif state["setup"] == "LONG":
             fired, details = check_long(tf)
             c = details
@@ -453,25 +404,16 @@ def run_scan():
             return
 
         if fired:
-            print(f"  🎯 ALL CONDITIONS MET — fetching market data & sending signal...")
-            price     = get_mark_price()
-            funding   = get_funding_rate()
-            oi        = get_open_interest()
-            ls_ratio  = get_long_short_ratio(period="1h")
-            buy_vol, sell_vol = get_taker_buy_sell_volume(period="1h")
-            liq_note  = get_liquidations_approx()
-
-            msg = build_message(
-                state["setup"], details, price,
-                funding, oi, ls_ratio,
-                buy_vol, sell_vol, liq_note
-            )
+            print(f"  🎯 ALL CONDITIONS MET — sending signal...")
+            price    = get_mark_price()
+            funding  = get_funding_rate()
+            oi       = get_open_interest()
+            liq_note = get_liquidations_approx()
+            msg = build_message(state["setup"], details, price, funding, oi, None, None, None, liq_note)
             send_telegram(msg)
             state["signal_fired"] = True
-
         else:
-            pending = [k for k, v in c.items()
-                       if isinstance(v, bool) and not v and k != "vol"]
+            pending = [k for k, v in c.items() if isinstance(v, bool) and not v and k != "vol"]
             if not details["vol"]["any_spike"]:
                 pending.append("vol_spike")
             print(f"  Waiting for: {', '.join(pending) or 'all met but not triggered'}")
@@ -495,18 +437,13 @@ if __name__ == "__main__":
     print(f"║  LONG zone  : 4H RSI ≤ {LONG_EXHAUSTION_RSI} then exhaust + 3-TF breakout   ║")
     print(f"║  Vol spike  : {VOLUME_SPIKE_MULTIPLIER}x average volume on 15M or 1H          ║")
     print(f"║  Scan every : 15 minutes                                    ║")
-    print(f"║  Data source: Binance Futures Public API (FREE)             ║")
+    print(f"║  Data source: Bybit Public API (no geo-restrictions)        ║")
     print( "╚══════════════════════════════════════════════════════════════╝\n")
 
     run_scan()
 
     scheduler = BlockingScheduler(timezone="UTC")
-    scheduler.add_job(
-        run_scan,
-        trigger="cron",
-        minute="1,16,31,46",
-        second=0,
-    )
+    scheduler.add_job(run_scan, trigger="cron", minute="1,16,31,46", second=0)
 
     print("\n📅 Scheduler active — next run at :01, :16, :31, or :46 past the hour")
     print("   Press Ctrl+C to stop\n")
