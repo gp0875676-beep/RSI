@@ -1,1 +1,1 @@
-worker: python rsi_bot_v2_final.py
+rsi_exhaustion_bot_v2.py
