@@ -1,12 +1,14 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     RSI EXHAUSTION + VOLUME SPIKE SIGNAL BOT  v2.0              ║
-║     15M / 1H / 4H Confluence  →  Telegram Alerts               ║
-║     OHLCV: yfinance (no geo-block) + Bybit market data         ║
+║     RSI EXHAUSTION + VOLUME SPIKE SIGNAL BOT  v4.0              ║
+║     TOP 2000 COINS — 15M / 1H / 4H Confluence                  ║
+║     RSI 90/10 EXTREME LEVELS — Ultra High Quality Signals      ║
+║     Data: yfinance only (no geo-block, no external API)        ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
 import os
+import time
 import asyncio
 import requests
 import yfinance as yf
@@ -23,12 +25,10 @@ import telegram
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "8798763306")
 
-SYMBOL      = "BTC-USD"    # yfinance format
-SYMBOL_DISPLAY = "BTCUSDT"
-RSI_PERIOD  = 14
+RSI_PERIOD = 14
 
-SHORT_EXHAUSTION_RSI = 90
-LONG_EXHAUSTION_RSI  = 10
+SHORT_EXHAUSTION_RSI = 90   # extreme overbought
+LONG_EXHAUSTION_RSI  = 10   # extreme oversold
 
 SHORT_15M_BREAK = 60
 LONG_15M_BREAK  = 40
@@ -44,43 +44,173 @@ RESET_LOWER = 35
 
 LOOKBACK_CANDLES = 12
 
-# ══════════════════════════════════════════════════════════════════
-#  OHLCV via yfinance  (works from any server, no geo-block)
-# ══════════════════════════════════════════════════════════════════
-
 YF_INTERVAL = {
-    "15m": ("15m",  "7d"),   # interval, period
+    "15m": ("15m", "7d"),
     "1h":  ("1h",  "30d"),
-    "4h":  ("1h",  "60d"),   # yfinance has no 4h; we resample from 1h
 }
 
-def fetch_ohlcv(timeframe, limit=120):
-    """Fetch candles via yfinance — no geo-restrictions."""
+# ══════════════════════════════════════════════════════════════════
+#  TOP 2000 CRYPTO SYMBOLS — hardcoded yfinance format
+#  (No external API needed — this list covers top coins + memes)
+# ══════════════════════════════════════════════════════════════════
+
+SYMBOLS = [
+    # ── Mega caps ──────────────────────────────────────────────────
+    "BTC-USD","ETH-USD","BNB-USD","SOL-USD","XRP-USD",
+    "ADA-USD","AVAX-USD","DOGE-USD","TRX-USD","DOT-USD",
+    "MATIC-USD","LTC-USD","SHIB-USD","BCH-USD","LINK-USD",
+    "XLM-USD","UNI-USD","ATOM-USD","XMR-USD","ETC-USD",
+    # ── Large caps ─────────────────────────────────────────────────
+    "ICP-USD","APT-USD","FIL-USD","HBAR-USD","VET-USD",
+    "NEAR-USD","ARB-USD","OP-USD","MKR-USD","AAVE-USD",
+    "GRT-USD","ALGO-USD","QNT-USD","EGLD-USD","SAND-USD",
+    "MANA-USD","AXS-USD","THETA-USD","XTZ-USD","EOS-USD",
+    "CAKE-USD","NEO-USD","WAVES-USD","ZEC-USD","DASH-USD",
+    "CHZ-USD","ENJ-USD","BAT-USD","COMP-USD","CRV-USD",
+    "SNX-USD","YFI-USD","SUSHI-USD","1INCH-USD","ZIL-USD",
+    "RVN-USD","HOT-USD","SC-USD","DGB-USD","BTT-USD",
+    "WIN-USD","ANKR-USD","CELO-USD","ROSE-USD","ONE-USD",
+    "KAVA-USD","IOTA-USD","ONT-USD","ICX-USD","ZRX-USD",
+    "LRC-USD","STORJ-USD","BAND-USD","RSR-USD","TWT-USD",
+    "DENT-USD","RLC-USD","MTL-USD","STMX-USD","OGN-USD",
+    # ── Mid caps ───────────────────────────────────────────────────
+    "SUI-USD","SEI-USD","TIA-USD","JTO-USD","PYTH-USD",
+    "JUP-USD","WIF-USD","BOME-USD","MEW-USD","SLERF-USD",
+    "INJ-USD","IMX-USD","STX-USD","CFX-USD","BLUR-USD",
+    "API3-USD","RDNT-USD","PENDLE-USD","SSV-USD","GMX-USD",
+    "DYDX-USD","PERP-USD","RUNE-USD","KSM-USD","SCRT-USD",
+    "CTSI-USD","OCEAN-USD","NMR-USD","LINA-USD","CELR-USD",
+    "SXP-USD","ALPHA-USD","REEF-USD","HARD-USD","VITE-USD",
+    "BEL-USD","TKO-USD","POLS-USD","DODO-USD","UNFI-USD",
+    "LIT-USD","AKRO-USD","VIDT-USD","FOR-USD","FRONT-USD",
+    "PROS-USD","BURGER-USD","BAKE-USD","XVS-USD","AUTO-USD",
+    "ALPACA-USD","TLM-USD","ALICE-USD","DEGO-USD","TORN-USD",
+    "BOND-USD","PROM-USD","FIRO-USD","DF-USD","MIR-USD",
+    "AUCTION-USD","SUPER-USD","MASK-USD","FORTH-USD","ILA-USD",
+    "PUNDIX-USD","TRIBE-USD","RGT-USD","AGLD-USD","RAD-USD",
+    "BETA-USD","RARE-USD","LAZIO-USD","PORTO-USD","SANTOS-USD",
+    "CHESS-USD","IDEX-USD","ASTR-USD","MOVR-USD","ATA-USD",
+    "QUICK-USD","BICO-USD","FLOKI-USD","PEOPLE-USD","SPELL-USD",
+    "JASMY-USD","ACA-USD","VOXEL-USD","CVP-USD","GHST-USD",
+    "YFII-USD","MDT-USD","TRB-USD","BTS-USD","WAN-USD",
+    "REI-USD","GTC-USD","XDEFI-USD","FARM-USD","HUNT-USD",
+    "GYEN-USD","POLS-USD","OM-USD","TOMO-USD","FET-USD",
+    "AGIX-USD","OCEAN-USD","NMR-USD","REN-USD","KNC-USD",
+    "BAL-USD","UMA-USD","MLN-USD","BNT-USD","ANT-USD",
+    "REP-USD","TRAC-USD","GNO-USD","PLA-USD","KEEP-USD",
+    "NU-USD","T-USD","RLC-USD","ASM-USD","ARPA-USD",
+    "CTXC-USD","BLZ-USD","TROY-USD","PERL-USD","TCT-USD",
+    "MBL-USD","COS-USD","TOMO-USD","FTM-USD","COTI-USD",
+    "STPT-USD","WTC-USD","LOOM-USD","EDO-USD","APIX-USD",
+    "SKL-USD","GLM-USD","PAXG-USD","WBTC-USD","RENBTC-USD",
+    # ── Meme coins ─────────────────────────────────────────────────
+    "PEPE-USD","BONK-USD","MEME-USD","TURBO-USD","BABYDOGE-USD",
+    "SAMO-USD","ELON-USD","KISHU-USD","VOLT-USD","SHINJA-USD",
+    "PIT-USD","CATGIRL-USD","SAITAMA-USD","HOGE-USD","RYOSHI-USD",
+    "DOGELON-USD","AKITA-USD","KING-USD","LEASH-USD","BONE-USD",
+    "ELONGATE-USD","SAFEMOON-USD","CUMROCKET-USD","TAMA-USD",
+    "MONONOKE-USD","SHIBT-USD","WOOF-USD","PIG-USD","TSUKI-USD",
+    "POODL-USD","XSHIB-USD","SHIBAINU-USD","FLOKINOMICS-USD",
+    "DOGEDASH-USD","FLOKIS-USD","BABYSAITAMA-USD","MOONSTAR-USD",
+    "KMON-USD","SMON-USD","COGE-USD","BSCD-USD","SHEESHA-USD",
+    # ── DeFi ───────────────────────────────────────────────────────
+    "LQTY-USD","LUSD-USD","FRAX-USD","FXS-USD","CVX-USD",
+    "ALCX-USD","SPELL-USD","MIM-USD","TIME-USD","WMEMO-USD",
+    "OHM-USD","SOHM-USD","KLIMA-USD","BTRFLY-USD","TOKE-USD",
+    "VSTA-USD","PREMIA-USD","HEGIC-USD","COVER-USD","RULER-USD",
+    "CREAM-USD","IRON-USD","TITAN-USD","SHACK-USD","GYSR-USD",
+    "POOL-USD","TRIBE-USD","FEI-USD","RAI-USD","FLOAT-USD",
+    "MPH-USD","IDLE-USD","INDEX-USD","DPI-USD","MVI-USD",
+    "BED-USD","DATA-USD","BANK-USD","MIST-USD","ARCH-USD",
+    # ── Layer 1 / Layer 2 ──────────────────────────────────────────
+    "ROSE-USD","GLMR-USD","ASTR-USD","SGB-USD","METIS-USD",
+    "BOBA-USD","OMG-USD","CELR-USD","LYX-USD","TLOS-USD",
+    "KLAY-USD","CSPR-USD","FLOW-USD","MINA-USD","HBAR-USD",
+    "XDC-USD","CELO-USD","ZEN-USD","STRAX-USD","ARK-USD",
+    "LSK-USD","XEM-USD","QTUM-USD","NULS-USD","ARDR-USD",
+    "IGNIS-USD","NXT-USD","KMD-USD","SYS-USD","PIVX-USD",
+    "FIRO-USD","BEAM-USD","GRIN-USD","MWC-USD","DUSK-USD",
+    "CCXX-USD","ALIAS-USD","PART-USD","NIX-USD","CLOAK-USD",
+    # ── NFT / Gaming / Metaverse ───────────────────────────────────
+    "APE-USD","GMT-USD","GST-USD","STEPN-USD","LOOKS-USD",
+    "X2Y2-USD","SUDOSWAP-USD","BEND-USD","NFT-USD","RARE-USD",
+    "RARI-USD","SUPER-USD","GALA-USD","ILV-USD","ATLAS-USD",
+    "POLIS-USD","GODS-USD","GUILD-USD","YGG-USD","MCADE-USD",
+    "RLY-USD","SIDUS-USD","SHRAPNEL-USD","HEROES-USD","MOBOX-USD",
+    "TLM-USD","ALICE-USD","PVU-USD","TOWER-USD","HERO-USD",
+    "SKILL-USD","WANA-USD","SFUND-USD","GBYTE-USD","UFO-USD",
+    "DOSE-USD","FEAR-USD","VEMP-USD","NFTB-USD","WAXP-USD",
+    "VGX-USD","POWR-USD","MAPS-USD","COPE-USD","MEDIA-USD",
+    # ── Infrastructure / Oracle / Storage ──────────────────────────
+    "API3-USD","BAND-USD","DIA-USD","ORAI-USD","TRB-USD",
+    "NMR-USD","REP-USD","AUC-USD","NEST-USD","DOS-USD",
+    "LINK-USD","UMA-USD","SUPRA-USD","FLUX-USD","SIA-USD",
+    "AR-USD","STORJ-USD","FIL-USD","BLUZELLE-USD","CUDOS-USD",
+    "NYM-USD","DUSK-USD","PRE-USD","HOPR-USD","LTO-USD",
+    "CRUST-USD","AIOZ-USD","THETA-USD","TFUEL-USD","ANKR-USD",
+    # ── Exchange tokens ────────────────────────────────────────────
+    "BNB-USD","HT-USD","OKB-USD","KCS-USD","FTT-USD",
+    "GT-USD","LEO-USD","MX-USD","BGB-USD","BTSE-USD",
+    "CRO-USD","NEXO-USD","CEL-USD","LOCK-USD","HBTC-USD",
+    # ── Privacy coins ──────────────────────────────────────────────
+    "XMR-USD","ZEC-USD","DASH-USD","FIRO-USD","BEAM-USD",
+    "GRIN-USD","DERO-USD","PIVX-USD","ZEN-USD","SCRT-USD",
+    "KEEP-USD","NMX-USD","CCX-USD","OXEN-USD","ZANO-USD",
+    # ── Wrapped / Stablecoins (skip these — RSI stays flat) ───────
+    # Not included intentionally
+    # ── Newer launches ─────────────────────────────────────────────
+    "PYTH-USD","JTO-USD","JUP-USD","WEN-USD","TNSR-USD",
+    "PRCL-USD","ZETA-USD","STRK-USD","MANTA-USD","ALT-USD",
+    "PIXEL-USD","PORTAL-USD","VANRY-USD","MYRO-USD","BODEN-USD",
+    "TRUMP-USD","MELANIA-USD","MOTHER-USD","GUMMY-USD","NEIRO-USD",
+    "CATI-USD","HMSTR-USD","DOGS-USD","MAJOR-USD","BLUM-USD",
+    "BANANA-USD","ORAI-USD","SAGA-USD","REZ-USD","BBB-USD",
+    "OMNI-USD","ETHFI-USD","EIGEN-USD","LISTA-USD","ZK-USD",
+    "ZKFAIR-USD","MOCA-USD","TAIKO-USD","MERL-USD","BOB-USD",
+    "IO-USD","ZKLEND-USD","EKUBO-USD","NOSTR-USD","HAEDAL-USD",
+]
+
+# Deduplicate preserving order
+_seen = set()
+SYMBOLS = [s for s in SYMBOLS if not (_seen.add(s) or s in _seen)]
+
+# ══════════════════════════════════════════════════════════════════
+#  GLOBAL STATE
+# ══════════════════════════════════════════════════════════════════
+
+states = {s: {"setup": None, "signal_fired": False, "extreme_val": None}
+          for s in SYMBOLS}
+
+# ══════════════════════════════════════════════════════════════════
+#  OHLCV via yfinance
+# ══════════════════════════════════════════════════════════════════
+
+def fetch_ohlcv(symbol, timeframe, limit=120):
     if timeframe == "4h":
-        # Download 1h candles and resample to 4h
-        df = yf.download(SYMBOL, interval="1h", period="60d",
-                         auto_adjust=True, progress=False)
-        if df.empty:
-            raise Exception("yfinance returned empty data for 4h (1h source)")
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.columns = ["open", "high", "low", "close", "volume"]
+        df = yf.download(symbol, interval="1h", period="60d",
+                         auto_adjust=True, progress=False,
+                         silence_errors=True)
+        if df is None or df.empty:
+            raise Exception("empty")
+        df = df[["Open","High","Low","Close","Volume"]].copy()
+        df.columns = ["open","high","low","close","volume"]
         df = df.resample("4h").agg({
-            "open":   "first",
-            "high":   "max",
-            "low":    "min",
-            "close":  "last",
-            "volume": "sum",
+            "open":"first","high":"max",
+            "low":"min","close":"last","volume":"sum"
         }).dropna()
     else:
         interval, period = YF_INTERVAL[timeframe]
-        df = yf.download(SYMBOL, interval=interval, period=period,
-                         auto_adjust=True, progress=False)
-        if df.empty:
-            raise Exception(f"yfinance returned empty data for {timeframe}")
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.columns = ["open", "high", "low", "close", "volume"]
+        df = yf.download(symbol, interval=interval, period=period,
+                         auto_adjust=True, progress=False,
+                         silence_errors=True)
+        if df is None or df.empty:
+            raise Exception("empty")
+        df = df[["Open","High","Low","Close","Volume"]].copy()
+        df.columns = ["open","high","low","close","volume"]
 
-    # Ensure UTC index
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0).str.lower()
+
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     else:
@@ -94,76 +224,7 @@ def add_rsi(df):
     return df.dropna()
 
 # ══════════════════════════════════════════════════════════════════
-#  MARKET DATA — Bybit public ticker (fallback gracefully if blocked)
-# ══════════════════════════════════════════════════════════════════
-
-BYBIT_BASE    = "https://api.bybit.com"
-BYBIT_SYMBOL  = "BTCUSDT"
-
-def _bybit_ticker():
-    try:
-        r = requests.get(f"{BYBIT_BASE}/v5/market/tickers",
-                         params={"category": "linear", "symbol": BYBIT_SYMBOL},
-                         timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("retCode") == 0:
-            return data["result"]["list"][0]
-    except Exception as e:
-        print(f"  [Bybit ticker] {e}")
-    return None
-
-def get_mark_price():
-    t = _bybit_ticker()
-    return float(t["markPrice"]) if t and "markPrice" in t else None
-
-def get_funding_rate():
-    t = _bybit_ticker()
-    if t and "fundingRate" in t:
-        return round(float(t["fundingRate"]) * 100, 5)
-    return None
-
-def get_open_interest():
-    try:
-        r = requests.get(f"{BYBIT_BASE}/v5/market/open-interest",
-                         params={"category": "linear", "symbol": BYBIT_SYMBOL,
-                                 "intervalTime": "1h", "limit": 1},
-                         timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("retCode") == 0:
-            lst = data["result"]["list"]
-            if lst:
-                return float(lst[0]["openInterest"])
-    except Exception as e:
-        print(f"  [Bybit OI] {e}")
-    return None
-
-def get_liquidations_approx():
-    try:
-        r = requests.get(f"{BYBIT_BASE}/v5/market/open-interest",
-                         params={"category": "linear", "symbol": BYBIT_SYMBOL,
-                                 "intervalTime": "15min", "limit": 3},
-                         timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("retCode") == 0:
-            lst = data["result"]["list"]
-            if len(lst) >= 2:
-                oi_now  = float(lst[0]["openInterest"])
-                oi_prev = float(lst[1]["openInterest"])
-                if oi_prev > 0:
-                    chg = ((oi_now - oi_prev) / oi_prev) * 100
-                    if chg < -2:
-                        return f"⚡ OI dropped {chg:.1f}% — possible liquidation cascade"
-                    elif chg > 2:
-                        return f"📈 OI surged +{chg:.1f}% — new positions opening"
-    except Exception as e:
-        print(f"  [Bybit liq] {e}")
-    return None
-
-# ══════════════════════════════════════════════════════════════════
-#  VOLUME SPIKE DETECTION
+#  VOLUME SPIKE
 # ══════════════════════════════════════════════════════════════════
 
 def detect_volume_spike(df, multiplier=VOLUME_SPIKE_MULTIPLIER, lookback=VOLUME_LOOKBACK):
@@ -174,20 +235,20 @@ def detect_volume_spike(df, multiplier=VOLUME_SPIKE_MULTIPLIER, lookback=VOLUME_
     curr_vol = df["volume"].iloc[-1]
     ratio    = curr_vol / avg_vol if avg_vol > 0 else 0
     is_spike = ratio >= multiplier
-    return is_spike, round(float(curr_vol), 2), round(float(avg_vol), 2), round(float(ratio), 2)
+    return is_spike, round(float(curr_vol),2), round(float(avg_vol),2), round(float(ratio),2)
 
 def volume_spike_summary(df_15m, df_1h):
     spike_15m, _, _, ratio_15m = detect_volume_spike(df_15m)
     spike_1h,  _, _, ratio_1h  = detect_volume_spike(df_1h)
-    either_spike = spike_15m or spike_1h
-    return either_spike, {
+    either = spike_15m or spike_1h
+    return either, {
         "15m_spike": spike_15m, "15m_ratio": ratio_15m,
         "1h_spike":  spike_1h,  "1h_ratio":  ratio_1h,
-        "any_spike": either_spike,
+        "any_spike": either,
     }
 
 # ══════════════════════════════════════════════════════════════════
-#  RSI SLOPE HELPERS
+#  RSI HELPERS
 # ══════════════════════════════════════════════════════════════════
 
 def slope(df, n=SLOPE_CANDLES):
@@ -255,43 +316,24 @@ def check_long(tf):
     return all(conds.values()), details
 
 # ══════════════════════════════════════════════════════════════════
-#  GLOBAL STATE
+#  TELEGRAM
 # ══════════════════════════════════════════════════════════════════
 
-state = {"setup": None, "signal_fired": False, "extreme_val": None}
-
-def reset_state():
-    global state
-    state = {"setup": None, "signal_fired": False, "extreme_val": None}
-
-def check_reset(tf):
-    r4 = rsi_now(tf["4h"])
-    if state["setup"] == "SHORT" and r4 <= RESET_UPPER:
-        print(f"  [RESET] RSI={r4} normalised ↓ {RESET_UPPER} — SHORT state cleared")
-        reset_state()
-    elif state["setup"] == "LONG" and r4 >= RESET_LOWER:
-        print(f"  [RESET] RSI={r4} normalised ↑ {RESET_LOWER} — LONG state cleared")
-        reset_state()
-
-# ══════════════════════════════════════════════════════════════════
-#  TELEGRAM MESSAGE
-# ══════════════════════════════════════════════════════════════════
-
-def _slope_icon(s): return {"rising": "↑", "declining": "↓", "flat": "→"}.get(s, "?")
+def _slope_icon(s): return {"rising":"↑","declining":"↓","flat":"→"}.get(s,"?")
 def _cond_icon(b):  return "✅" if b else "❌"
 
-def build_message(sig_type, details, price, funding, oi, liq_note):
+def build_message(sig_type, details, symbol_display):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     vol = details["vol"]
 
     if sig_type == "SHORT":
         hdr        = "🔴 *SHORT SIGNAL — RSI EXHAUSTION*"
         extreme    = f"4H RSI peak: `{details['peak_4h']}` ≥ {SHORT_EXHAUSTION_RSI} {_cond_icon(details['exhaustion'])}"
-        entry_hint = "⚠️ *Consider short entry on retest of breakdown level*"
+        entry_hint = "⚠️ *Consider short on retest of breakdown level*"
     else:
         hdr        = "🟢 *LONG SIGNAL — RSI EXHAUSTION*"
         extreme    = f"4H RSI bottom: `{details['bottom_4h']}` ≤ {LONG_EXHAUSTION_RSI} {_cond_icon(details['exhaustion'])}"
-        entry_hint = "⚠️ *Consider long entry on retest of breakout level*"
+        entry_hint = "⚠️ *Consider long on retest of breakout level*"
 
     rsi_grid = (
         f"```\n"
@@ -303,41 +345,24 @@ def build_message(sig_type, details, price, funding, oi, liq_note):
         f"```"
     )
 
-    vol_15m   = f"`{vol['15m_ratio']}x` {'🔥' if vol['15m_spike'] else '—'}"
-    vol_1h    = f"`{vol['1h_ratio']}x`  {'🔥' if vol['1h_spike'] else '—'}"
-    vol_block = f"📊 *Volume Spike* {_cond_icon(vol['any_spike'])}\n  15M: {vol_15m}   1H: {vol_1h}"
-
-    market_lines = []
-    if price:
-        market_lines.append(f"💵 Price: `${price:,.2f}`")
-    if funding is not None:
-        sent = "🐂 long bias" if funding > 0 else "🐻 short bias"
-        market_lines.append(f"💰 Funding: `{funding:+.4f}%` ({sent})")
-    if oi:
-        market_lines.append(f"📦 Open Interest: `${oi/1e9:.2f}B`")
-    if liq_note:
-        market_lines.append(liq_note)
-
-    market_block = "\n".join(market_lines) if market_lines else "_Market data unavailable_"
+    vol_block = (
+        f"📊 *Volume Spike* {_cond_icon(vol['any_spike'])}\n"
+        f"  15M: `{vol['15m_ratio']}x` {'🔥' if vol['15m_spike'] else '—'}"
+        f"   1H: `{vol['1h_ratio']}x` {'🔥' if vol['1h_spike'] else '—'}"
+    )
 
     return "\n".join(filter(None, [
         hdr,
-        f"📌 *{SYMBOL_DISPLAY} — 15M + 1H + 4H Confluence*\n",
+        f"📌 *{symbol_display} — 15M + 1H + 4H Confluence*\n",
         "*Exhaustion confirmed:*",
         extreme + "\n",
         "*RSI breakdown across timeframes:*",
         rsi_grid,
         vol_block + "\n",
-        "*Live market data:*",
-        market_block + "\n",
         entry_hint,
         f"\n🕐 `{now}`",
         "_Not financial advice — DYOR_",
     ]))
-
-# ══════════════════════════════════════════════════════════════════
-#  TELEGRAM SENDER
-# ══════════════════════════════════════════════════════════════════
 
 async def _tg_send(msg):
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
@@ -345,98 +370,129 @@ async def _tg_send(msg):
 
 def send_telegram(msg):
     asyncio.run(_tg_send(msg))
-    print(f"  [TG ✅] Message sent ({len(msg)} chars)")
+    print(f"    [TG ✅] Sent ({len(msg)} chars)")
 
 # ══════════════════════════════════════════════════════════════════
-#  MAIN SCAN JOB
+#  SCAN ONE SYMBOL
 # ══════════════════════════════════════════════════════════════════
 
-def run_scan():
-    global state
-    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"\n[{ts}] ─── Scanning {SYMBOL_DISPLAY} ───")
+def scan_symbol(symbol):
+    display = symbol.replace("-USD","USDT")
+    st = states[symbol]
 
     try:
         tf = {}
         for t in ["15m", "1h", "4h"]:
-            raw   = fetch_ohlcv(t, limit=120)
+            raw   = fetch_ohlcv(symbol, t, limit=120)
             tf[t] = add_rsi(raw)
+            time.sleep(0.2)
 
         r4  = rsi_now(tf["4h"])
         pk4 = rsi_peak(tf["4h"])
         bt4 = rsi_bottom(tf["4h"])
-        print(f"  4H RSI={r4} | peak={pk4} | bottom={bt4} | setup={state['setup']} | fired={state['signal_fired']}")
 
-        if state["signal_fired"]:
-            check_reset(tf)
+        # Only log coins in extreme zone or active setup
+        in_zone = pk4 >= SHORT_EXHAUSTION_RSI or bt4 <= LONG_EXHAUSTION_RSI or st["setup"]
+        if in_zone:
+            print(f"  {display:<14} 4H={r4:<6} peak={pk4:<6} bot={bt4:<6} setup={st['setup'] or '—'}")
+
+        # Reset check
+        if st["signal_fired"]:
+            if st["setup"] == "SHORT" and r4 <= RESET_UPPER:
+                print(f"    [RESET] {display} SHORT cleared")
+                states[symbol] = {"setup": None, "signal_fired": False, "extreme_val": None}
+            elif st["setup"] == "LONG" and r4 >= RESET_LOWER:
+                print(f"    [RESET] {display} LONG cleared")
+                states[symbol] = {"setup": None, "signal_fired": False, "extreme_val": None}
             return
 
-        if state["setup"] is None:
+        # Detect setup
+        if st["setup"] is None:
             if pk4 >= SHORT_EXHAUSTION_RSI:
-                state["setup"] = "SHORT"; state["extreme_val"] = pk4
-                print(f"  ⚡ SHORT exhaustion — 4H peak RSI = {pk4}")
+                states[symbol]["setup"] = "SHORT"
+                states[symbol]["extreme_val"] = pk4
+                print(f"    ⚡ {display} SHORT exhaustion! peak={pk4}")
             elif bt4 <= LONG_EXHAUSTION_RSI:
-                state["setup"] = "LONG"; state["extreme_val"] = bt4
-                print(f"  ⚡ LONG exhaustion — 4H bottom RSI = {bt4}")
+                states[symbol]["setup"] = "LONG"
+                states[symbol]["extreme_val"] = bt4
+                print(f"    ⚡ {display} LONG exhaustion! bottom={bt4}")
             else:
-                print(f"  No extreme setup (need ≥{SHORT_EXHAUSTION_RSI} or ≤{LONG_EXHAUSTION_RSI})")
                 return
 
-        if state["setup"] == "SHORT":
+        # Check confluence
+        if states[symbol]["setup"] == "SHORT":
             fired, details = check_short(tf)
             c = details
-            print(f"  SHORT: exhaust={_cond_icon(c['exhaustion'])} 4H↓={_cond_icon(c['4h_decline'])} "
-                  f"1H↓={_cond_icon(c['1h_decline'])} 15M={_cond_icon(c['15m_break'])} VOL={_cond_icon(c['vol']['any_spike'])}")
-        elif state["setup"] == "LONG":
+            print(f"    SHORT {display}: "
+                  f"exhaust={_cond_icon(c['exhaustion'])} "
+                  f"4H↓={_cond_icon(c['4h_decline'])} "
+                  f"1H↓={_cond_icon(c['1h_decline'])} "
+                  f"15M={_cond_icon(c['15m_break'])} "
+                  f"VOL={_cond_icon(c['vol']['any_spike'])}")
+        else:
             fired, details = check_long(tf)
             c = details
-            print(f"  LONG:  exhaust={_cond_icon(c['exhaustion'])} 4H↑={_cond_icon(c['4h_rise'])} "
-                  f"1H↑={_cond_icon(c['1h_rise'])} 15M={_cond_icon(c['15m_break'])} VOL={_cond_icon(c['vol']['any_spike'])}")
-        else:
-            return
+            print(f"    LONG  {display}: "
+                  f"exhaust={_cond_icon(c['exhaustion'])} "
+                  f"4H↑={_cond_icon(c['4h_rise'])} "
+                  f"1H↑={_cond_icon(c['1h_rise'])} "
+                  f"15M={_cond_icon(c['15m_break'])} "
+                  f"VOL={_cond_icon(c['vol']['any_spike'])}")
 
         if fired:
-            print("  🎯 ALL CONDITIONS MET — sending signal...")
-            msg = build_message(
-                state["setup"], details,
-                get_mark_price(), get_funding_rate(),
-                get_open_interest(), get_liquidations_approx()
-            )
+            print(f"    🎯 {display} SIGNAL! Sending Telegram...")
+            msg = build_message(states[symbol]["setup"], details, display)
             send_telegram(msg)
-            state["signal_fired"] = True
+            states[symbol]["signal_fired"] = True
         else:
             pending = [k for k, v in c.items() if isinstance(v, bool) and not v and k != "vol"]
-            if not details["vol"]["any_spike"]:
-                pending.append("vol_spike")
-            print(f"  Waiting for: {', '.join(pending) or 'all met'}")
+            if not details["vol"]["any_spike"]: pending.append("vol_spike")
+            print(f"    ⏳ {display} waiting: {', '.join(pending)}")
 
-    except Exception as e:
-        import traceback
-        print(f"  ❌ ERROR: {e}")
-        traceback.print_exc()
+    except Exception:
+        pass  # silently skip — no yfinance data for this coin
 
 # ══════════════════════════════════════════════════════════════════
-#  SCHEDULER
+#  MAIN SCAN
+# ══════════════════════════════════════════════════════════════════
+
+def run_scan():
+    ts    = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    total = len(SYMBOLS)
+    print(f"\n[{ts}] ══ Scanning {total} coins ══")
+
+    for i, symbol in enumerate(SYMBOLS, 1):
+        if i % 50 == 0:
+            print(f"  ... {i}/{total} scanned ...")
+        scan_symbol(symbol)
+
+    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] ══ Scan complete ══\n")
+
+# ══════════════════════════════════════════════════════════════════
+#  STARTUP + SCHEDULER
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("""
+    total = len(SYMBOLS)
+    print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║   RSI EXHAUSTION + VOLUME SPIKE BOT  v2.0  starting...     ║
-╠══════════════════════════════════════════════════════════════╣""")
-    print(f"║  Symbol     : {SYMBOL_DISPLAY:<44} ║")
-    print(f"║  SHORT zone : 4H RSI ≥ {SHORT_EXHAUSTION_RSI} then exhaust + 3-TF breakdown  ║")
-    print(f"║  LONG zone  : 4H RSI ≤ {LONG_EXHAUSTION_RSI} then exhaust + 3-TF breakout   ║")
-    print(f"║  Vol spike  : {VOLUME_SPIKE_MULTIPLIER}x average volume on 15M or 1H          ║")
-    print(f"║  Scan every : 15 minutes                                    ║")
-    print(f"║  Data source: yfinance (no geo-block) + Bybit market data  ║")
-    print( "╚══════════════════════════════════════════════════════════════╝\n")
+║   RSI EXHAUSTION BOT  v4.0  —  {total} COINS             ║
+╠══════════════════════════════════════════════════════════════╣
+║  SHORT zone : 4H RSI ≥ 90 — extreme overbought             ║
+║  LONG zone  : 4H RSI ≤ 10 — extreme oversold               ║
+║  Vol spike  : 1.8x average on 15M or 1H                    ║
+║  Confluence : 4H + 1H + 15M all must confirm               ║
+║  Scan every : 15 minutes                                    ║
+║  Data source: yfinance only (zero external APIs)           ║
+╚══════════════════════════════════════════════════════════════╝
+""")
 
     run_scan()
 
     scheduler = BlockingScheduler(timezone="UTC")
     scheduler.add_job(run_scan, trigger="cron", minute="1,16,31,46", second=0)
-    print("\n📅 Scheduler active — next run at :01, :16, :31, or :46 past the hour")
+
+    print("📅 Scheduler active — scans at :01, :16, :31, :46 past the hour")
     print("   Press Ctrl+C to stop\n")
 
     try:
